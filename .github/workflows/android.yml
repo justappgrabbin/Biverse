@@ -1,0 +1,219 @@
+name: Build Biverse Android APK
+on:
+  push:
+    paths:
+      - 'biverse-guide-synthia-mesh-complete-20260725.zip'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check archive presence
+        id: archive
+        run: |
+          if test -f biverse-guide-synthia-mesh-complete-20260725.zip; then echo 'ready=true' >> "$GITHUB_OUTPUT"; else echo 'ready=false' >> "$GITHUB_OUTPUT"; echo 'Upload the original ZIP to enable the build.'; fi
+      - name: Verify and unpack source
+        if: steps.archive.outputs.ready == 'true'
+        run: |
+          echo 'a0a2de265f41293dc54520116fd67be089acb836b3379ddad81ab7f17a6da752  biverse-guide-synthia-mesh-complete-20260725.zip' | sha256sum -c -
+          unzip -q biverse-guide-synthia-mesh-complete-20260725.zip -d source
+          test -f source/biverse-guide/web/dist/index.html
+      - uses: actions/setup-java@v4
+        if: steps.archive.outputs.ready == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.archive.outputs.ready == 'true'
+        with:
+          gradle-version: '8.10.2'
+      - name: Prepare Android client
+        if: steps.archive.outputs.ready == 'true'
+        run: |
+          mkdir -p android/app/src/main/java/org/biverse/client android/app/src/main/assets
+          cp -a source/biverse-guide/web/dist/. android/app/src/main/assets/
+          cat > android/settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'Biverse'
+          include ':app'
+          EOF
+          cat > android/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.7.3' apply false }
+          EOF
+          cat > android/app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'org.biverse.client'
+            compileSdk 35
+            defaultConfig {
+              applicationId 'org.biverse.client'
+              minSdk 26
+              targetSdk 35
+              versionCode 1
+              versionName '0.4.0-client'
+            }
+            compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          dependencies { implementation 'org.nanohttpd:nanohttpd:2.3.1' }
+          EOF
+          cat > android/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <application android:label="Biverse" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="true" android:allowBackup="false">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > android/app/src/main/java/org/biverse/client/MainActivity.java <<'EOF'
+          package org.biverse.client;
+
+          import android.app.*;
+          import android.os.Bundle;
+          import android.webkit.*;
+          import android.widget.*;
+          import android.view.ViewGroup;
+          import java.io.*;
+          import java.net.*;
+          import java.nio.charset.StandardCharsets;
+          import java.util.*;
+          import fi.iki.elonen.NanoHTTPD;
+
+          public class MainActivity extends Activity {
+            private volatile String backend;
+            private WebView web;
+            private LocalServer server;
+            private String origin;
+            @Override public void onCreate(Bundle state) {
+              super.onCreate(state);
+              backend = getPreferences(MODE_PRIVATE).getString("backend", "http://127.0.0.1:8000");
+              LinearLayout layout = new LinearLayout(this);
+              layout.setOrientation(LinearLayout.VERTICAL);
+              Button settings = new Button(this);
+              settings.setText("Calculation server");
+              settings.setOnClickListener(v -> configure());
+              layout.addView(settings);
+              web = new WebView(this);
+              layout.addView(web, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+              setContentView(layout);
+              try {
+                server = new LocalServer();
+                server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
+                origin = "http://127.0.0.1:" + server.getListeningPort();
+                web.getSettings().setJavaScriptEnabled(true);
+                web.getSettings().setDomStorageEnabled(true);
+                web.getSettings().setAllowFileAccess(false);
+                web.getSettings().setAllowContentAccess(false);
+                web.setWebViewClient(new WebViewClient() {
+                  @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                    return !r.getUrl().toString().startsWith(origin + "/");
+                  }
+                });
+                web.loadUrl(origin + "/");
+              } catch (Exception e) {
+                new AlertDialog.Builder(this).setMessage("Cannot start Biverse: " + e.getMessage()).setPositiveButton("OK", null).show();
+              }
+            }
+            private void configure() {
+              EditText field = new EditText(this);
+              field.setSingleLine(true);
+              field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+              field.setText(backend);
+              new AlertDialog.Builder(this).setTitle("Calculation service URL")
+                .setMessage("Use the local Python service or an HTTPS-hosted instance.")
+                .setView(field).setNegativeButton("Cancel", null).setPositiveButton("Save", (d,w) -> {
+                  try {
+                    URI u = new URI(field.getText().toString().trim());
+                    boolean local = "http".equalsIgnoreCase(u.getScheme()) && ("127.0.0.1".equals(u.getHost()) || "localhost".equalsIgnoreCase(u.getHost()));
+                    if ((!local && !"https".equalsIgnoreCase(u.getScheme())) || u.getHost()==null || u.getUserInfo()!=null || u.getQuery()!=null || u.getFragment()!=null || !(u.getPath()==null || u.getPath().isEmpty() || "/".equals(u.getPath()))) throw new IllegalArgumentException();
+                    backend = u.toString().replaceAll("/+$", "");
+                    getPreferences(MODE_PRIVATE).edit().putString("backend", backend).apply();
+                    web.reload();
+                  } catch (Exception e) { Toast.makeText(this,"Enter a local HTTP or HTTPS server origin",Toast.LENGTH_LONG).show(); }
+                }).show();
+            }
+            @Override protected void onDestroy() {
+              if (web != null) web.destroy();
+              if (server != null) server.stop();
+              super.onDestroy();
+            }
+            private class LocalServer extends NanoHTTPD {
+              LocalServer() { super("127.0.0.1", 0); }
+              @Override public Response serve(IHTTPSession s) {
+                try {
+                  String host = s.getHeaders().get("host");
+                  if (host == null || !host.equals("127.0.0.1:" + getListeningPort())) return newFixedLengthResponse(Response.Status.FORBIDDEN,"text/plain","Forbidden");
+                  String path = s.getUri();
+                  if (path.startsWith("/api/")) {
+                    if (!origin.equals(s.getHeaders().get("origin")) && s.getMethod()!=Method.GET) return newFixedLengthResponse(Response.Status.FORBIDDEN,"text/plain","Forbidden");
+                    return proxy(s,path);
+                  }
+                  if (s.getMethod()!=Method.GET || path.contains("..")) return newFixedLengthResponse(Response.Status.NOT_FOUND,"text/plain","Not found");
+                  String name = path.equals("/") ? "index.html" : path.substring(1);
+                  String mime = URLConnection.guessContentTypeFromName(name);
+                  if (name.endsWith(".js")) mime="application/javascript";
+                  if (name.endsWith(".css")) mime="text/css";
+                  if (name.endsWith(".svg")) mime="image/svg+xml";
+                  if (mime==null) mime="application/octet-stream";
+                  try (InputStream in = getAssets().open(name)) {
+                    byte[] bytes=read(in);
+                    return newFixedLengthResponse(Response.Status.OK,mime,new ByteArrayInputStream(bytes),bytes.length);
+                  } catch (FileNotFoundException e) {
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND,"text/plain","Not found");
+                  }
+                } catch (Exception e) {
+                  return newFixedLengthResponse(Response.Status.INTERNAL_ERROR,"application/json","{\"detail\":\"Calculation service unavailable. Check the configured server and start the Python backend.\"}");
+                }
+              }
+              private Response proxy(IHTTPSession s,String path) throws Exception {
+                String query=s.getQueryParameterString();
+                HttpURLConnection c=(HttpURLConnection)new URL(backend+path+(query==null||query.isEmpty()?"":"?"+query)).openConnection();
+                try {
+                  c.setConnectTimeout(10000); c.setReadTimeout(120000); c.setInstanceFollowRedirects(false);
+                  c.setRequestMethod(s.getMethod().name());
+                  if(s.getMethod()==Method.POST || s.getMethod()==Method.PUT || s.getMethod()==Method.PATCH) {
+                    Map<String,String> body=new HashMap<>();
+                    s.parseBody(body);
+                    String payload=body.getOrDefault("postData","");
+                    c.setDoOutput(true);
+                    c.setRequestProperty("Content-Type",s.getHeaders().getOrDefault("content-type","application/json"));
+                    try(OutputStream out=c.getOutputStream()) { out.write(payload.getBytes(StandardCharsets.UTF_8)); }
+                  }
+                  int code=c.getResponseCode();
+                  if(code>=300 && code<400) return newFixedLengthResponse(Response.Status.BAD_REQUEST,"application/json","{\"detail\":\"Use the final HTTPS service URL.\"}");
+                  InputStream in=code>=400?c.getErrorStream():c.getInputStream();
+                  byte[] data;
+                  if(in==null) data=new byte[0]; else try(InputStream stream=in){data=read(stream);}
+                  String mime=c.getContentType(); if(mime==null)mime="application/json";
+                  final int resultCode=code;
+                  Response.IStatus status=new Response.IStatus(){
+                    public int getRequestStatus(){return resultCode;}
+                    public String getDescription(){return resultCode+" Upstream";}
+                  };
+                  return newFixedLengthResponse(status,mime,new ByteArrayInputStream(data),data.length);
+                } finally {c.disconnect();}
+              }
+              private byte[] read(InputStream in) throws IOException {
+                ByteArrayOutputStream out=new ByteArrayOutputStream();
+                byte[] buf=new byte[8192]; int n; while((n=in.read(buf))!=-1)out.write(buf,0,n); return out.toByteArray();
+              }
+            }
+          }
+          EOF
+      - name: Build debug APK
+        if: steps.archive.outputs.ready == 'true'
+        run: |
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+          gradle -p android --no-daemon :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: steps.archive.outputs.ready == 'true'
+        with:
+          name: Biverse-Android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
