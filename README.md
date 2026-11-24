@@ -1,23 +1,15 @@
 # Biverse
 
-Source snapshot: `biverse-guide-synthia-mesh-complete-20260725.zip` (22,413,948 bytes).
+The Android build is now designed as a self-contained ARM64 APK with the original React interface, embedded Python/FastAPI calculation engine, original IsoHuman astronomy-engine calculator, local SQLite learning stores, and TinyLlama 1.1B Q4_K_M running via llama.cpp. The app declares no INTERNET permission and does not require a separately hosted server.
 
-SHA-256: `a0a2de265f41293dc54520116fd67be089acb836b3379ddad81ab7f17a6da752`
+## Build from the revised archive
 
-Upload the unchanged ZIP to the repository root. This repository is public; review the archive before publishing it.
+Upload the exact revised file `biverse-offline-android.zip` to this repository's root.
 
-## Android
+SHA-256: `8bf61aaa8809c80f0d1ca8519208be0ec39b606d29a46bc29707ae5692efbac2`
 
-The Android build is a client for the original React frontend and its Python FastAPI calculation service. It does not bundle a Python interpreter or Swiss Ephemeris into the APK. The client uses the included built frontend and forwards API calls to the service address configured inside the app.
+The [Android build workflow](.github/workflows/android.yml) runs on upload or manual dispatch, obtains build-only dependencies and embeds the model weights into the APK. Download the `Biverse-Offline-ARM64-debug` artifact from Actions after a successful build.
 
-To run the backend from the extracted archive on a supported Python host:
+Host integration tests passed (22 tests). Native Android compilation and actual on-device inference and airplane-mode testing are still pending. The APK uses the original astronomy-engine local calculation path, not the optional desktop PyHD/Swiss Ephemeris engine. The original separate CLI/mesh sources are preserved; not all have Android execution adapters. Read `android/README.md` in the revised archive for details.
 
-```sh
-cd biverse-guide
-python -m pip install -r requirements-web.txt
-python -m uvicorn human_design.web_api:app --host 127.0.0.1 --port 8000
-```
-
-For a remote host, configure an HTTPS reverse proxy and use its HTTPS URL in the app. The local default is `http://127.0.0.1:8000` (a backend on the Android device itself).
-
-The original source and data are preserved in the ZIP. The Android workflow, when installed, builds a debug APK from the included frontend and publishes it as a GitHub Actions artifact.
+This repository is public. Review the archive's contents before uploading.
